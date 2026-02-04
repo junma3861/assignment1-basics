@@ -165,3 +165,5 @@ data/owt_train.txt.gz
 data/owt_valid.txt.gz
 data/TinyStoriesV2-GPT4-train.txt
 data/TinyStoriesV2-GPT4-valid.txt
+bpe/TinyStoriesV2/merges.txt
+bpe/TinyStoriesV2/vocab.json

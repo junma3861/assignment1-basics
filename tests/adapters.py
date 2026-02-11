@@ -83,8 +83,13 @@ def run_swiglu(
     # swiglu.w1.weight.data = w1_weight
     # swiglu.w2.weight.data = w2_weight
     # swiglu.w3.weight.data = w3_weight
-    raise NotImplementedError
+    from cs336_basics.positionwise_feedforward import PositionwiseFeedForward
 
+    swiglu = PositionwiseFeedForward(d_model, d_ff)
+    swiglu.linear1.weight.data = w1_weight
+    swiglu.linear2.weight.data = w2_weight
+    swiglu.linear3.weight.data = w3_weight
+    return swiglu(in_features)
 
 def run_scaled_dot_product_attention(
     Q: Float[Tensor, " ... queries d_k"],

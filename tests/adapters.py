@@ -155,7 +155,19 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    from cs336_basics.multihead_self_attention import MultiHeadSelfAttention
+    model = MultiHeadSelfAttention(d_model, num_heads, use_rope=False)
+    # We need to transpose the projection weights because our implementation uses nn.Linear layers, which expect weights of shape (out_features, in_features)
+    model.q_linear.weight.data = q_proj_weight
+    model.k_linear.weight.data = k_proj_weight
+    model.v_linear.weight.data = v_proj_weight
+    model.out_linear.weight.data = o_proj_weight
+    # Set biases to zero
+    model.q_linear.bias.data.zero_()
+    model.k_linear.bias.data.zero_()
+    model.v_linear.bias.data.zero_()
+    model.out_linear.bias.data.zero_()
+    return model(in_features)
 
 
 def run_multihead_self_attention_with_rope(
@@ -195,7 +207,18 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    from cs336_basics.multihead_self_attention import MultiHeadSelfAttention
+    model = MultiHeadSelfAttention(d_model, num_heads, use_rope=True, theta=theta, max_seq_len=max_seq_len)
+    model.q_linear.weight.data = q_proj_weight
+    model.k_linear.weight.data = k_proj_weight
+    model.v_linear.weight.data = v_proj_weight
+    model.out_linear.weight.data = o_proj_weight
+    # Set biases to zero
+    model.q_linear.bias.data.zero_()
+    model.k_linear.bias.data.zero_()
+    model.v_linear.bias.data.zero_()
+    model.out_linear.bias.data.zero_()
+    return model(in_features, token_positions=token_positions)
 
 
 def run_rope(
@@ -292,7 +315,27 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    from cs336_basics.transformer_block import TransformerBlock
+    model = TransformerBlock(d_model, num_heads, d_ff, use_rope=True, theta=theta, max_seq_len=max_seq_len) 
+    model.self_attention.q_linear.weight.data = weights["attn.q_proj.weight"]
+    model.self_attention.k_linear.weight.data = weights["attn.k_proj.weight"]
+    model.self_attention.v_linear.weight.data = weights["attn.v_proj.weight"]
+    model.self_attention.out_linear.weight.data = weights["attn.output_proj.weight"]
+    # Zero out biases for attention
+    model.self_attention.q_linear.bias.data.zero_()
+    model.self_attention.k_linear.bias.data.zero_()
+    model.self_attention.v_linear.bias.data.zero_()
+    model.self_attention.out_linear.bias.data.zero_()
+    # Set RMSNorm weights
+    model.layer_norm1.weight.data = weights["ln1.weight"]
+    # Set feed-forward weights (no biases in PositionwiseFeedForward)
+    model.feed_forward.linear1.weight.data = weights["ffn.w1.weight"]
+    model.feed_forward.linear2.weight.data = weights["ffn.w2.weight"]
+    model.feed_forward.linear3.weight.data = weights["ffn.w3.weight"]
+    # Set second RMSNorm weight
+    model.layer_norm2.weight.data = weights["ln2.weight"]
+    return model(in_features)
+
 
 
 def run_transformer_lm(
@@ -374,7 +417,32 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+    from cs336_basics.transformer_lm import TransformerLM
+    model = TransformerLM(vocab_size, d_model, num_heads, d_ff, num_layers, use_rope=True, theta=rope_theta, max_seq_len=context_length)
+    model.token_embedding.weight.data = weights["token_embeddings.weight"]
+    for i in range(num_layers):
+        model.layers[i].self_attention.q_linear.weight.data = weights[f"layers.{i}.attn.q_proj.weight"]
+        model.layers[i].self_attention.k_linear.weight.data = weights[f"layers.{i}.attn.k_proj.weight"]
+        model.layers[i].self_attention.v_linear.weight.data = weights[f"layers.{i}.attn.v_proj.weight"]
+        model.layers[i].self_attention.out_linear.weight.data = weights[f"layers.{i}.attn.output_proj.weight"]
+        # Zero out biases for attention
+        model.layers[i].self_attention.q_linear.bias.data.zero_()
+        model.layers[i].self_attention.k_linear.bias.data.zero_()
+        model.layers[i].self_attention.v_linear.bias.data.zero_()
+        model.layers[i].self_attention.out_linear.bias.data.zero_()
+        # Set RMSNorm weights
+        model.layers[i].layer_norm1.weight.data = weights[f"layers.{i}.ln1.weight"]
+        # Set feed-forward weights (no biases in PositionwiseFeedForward)
+        model.layers[i].feed_forward.linear1.weight.data = weights[f"layers.{i}.ffn.w1.weight"]
+        model.layers[i].feed_forward.linear2.weight.data = weights[f"layers.{i}.ffn.w2.weight"]
+        model.layers[i].feed_forward.linear3.weight.data = weights[f"layers.{i}.ffn.w3.weight"]
+        # Set second RMSNorm weight
+        model.layers[i].layer_norm2.weight.data = weights[f"layers.{i}.ln2.weight"]
+    model.layer_norm.weight.data = weights["ln_final.weight"]
+    model.output_linear.weight.data = weights["lm_head.weight"]
+    # Zero out output linear bias
+    model.output_linear.bias.data.zero_()
+    return model(in_indices)
 
 
 def run_rmsnorm(

@@ -167,3 +167,11 @@ data/TinyStoriesV2-GPT4-train.txt
 data/TinyStoriesV2-GPT4-valid.txt
 bpe/TinyStoriesV2/merges.txt
 bpe/TinyStoriesV2/vocab.json
+
+# Large data files
+data/TinyStoriesV2-GPT4-train.ids
+data/TinyStoriesV2-GPT4-valid.ids
+tests/fixtures/ts_tests/model.pt
+tests/fixtures/tinystories_sample_5M.txt
+tests/_snapshots/test_transformer_lm.npz
+tests/fixtures/gpt2_vocab.json

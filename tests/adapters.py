@@ -418,31 +418,32 @@ def run_transformer_lm(
         next-word distribution for each token.
     """
     from cs336_basics.transformer_lm import TransformerLM
-    model = TransformerLM(vocab_size, d_model, num_heads, d_ff, num_layers, use_rope=True, theta=rope_theta, max_seq_len=context_length)
+    model = TransformerLM(vocab_size, context_length, d_model, num_heads, d_ff, num_layers, rope_theta=rope_theta)
     model.token_embedding.weight.data = weights["token_embeddings.weight"]
-    for i in range(num_layers):
-        model.layers[i].self_attention.q_linear.weight.data = weights[f"layers.{i}.attn.q_proj.weight"]
-        model.layers[i].self_attention.k_linear.weight.data = weights[f"layers.{i}.attn.k_proj.weight"]
-        model.layers[i].self_attention.v_linear.weight.data = weights[f"layers.{i}.attn.v_proj.weight"]
-        model.layers[i].self_attention.out_linear.weight.data = weights[f"layers.{i}.attn.output_proj.weight"]
+    for layer_idx in range(num_layers):
+        model.layers[layer_idx].self_attention.q_linear.weight.data = weights[f"layers.{layer_idx}.attn.q_proj.weight"]
+        model.layers[layer_idx].self_attention.k_linear.weight.data = weights[f"layers.{layer_idx}.attn.k_proj.weight"]
+        model.layers[layer_idx].self_attention.v_linear.weight.data = weights[f"layers.{layer_idx}.attn.v_proj.weight"]
+        model.layers[layer_idx].self_attention.out_linear.weight.data = weights[f"layers.{layer_idx}.attn.output_proj.weight"]
         # Zero out biases for attention
-        model.layers[i].self_attention.q_linear.bias.data.zero_()
-        model.layers[i].self_attention.k_linear.bias.data.zero_()
-        model.layers[i].self_attention.v_linear.bias.data.zero_()
-        model.layers[i].self_attention.out_linear.bias.data.zero_()
+        model.layers[layer_idx].self_attention.q_linear.bias.data.zero_()
+        model.layers[layer_idx].self_attention.k_linear.bias.data.zero_()
+        model.layers[layer_idx].self_attention.v_linear.bias.data.zero_()
+        model.layers[layer_idx].self_attention.out_linear.bias.data.zero_()
         # Set RMSNorm weights
-        model.layers[i].layer_norm1.weight.data = weights[f"layers.{i}.ln1.weight"]
+        model.layers[layer_idx].layer_norm1.weight.data = weights[f"layers.{layer_idx}.ln1.weight"]
         # Set feed-forward weights (no biases in PositionwiseFeedForward)
-        model.layers[i].feed_forward.linear1.weight.data = weights[f"layers.{i}.ffn.w1.weight"]
-        model.layers[i].feed_forward.linear2.weight.data = weights[f"layers.{i}.ffn.w2.weight"]
-        model.layers[i].feed_forward.linear3.weight.data = weights[f"layers.{i}.ffn.w3.weight"]
+        model.layers[layer_idx].feed_forward.linear1.weight.data = weights[f"layers.{layer_idx}.ffn.w1.weight"]
+        model.layers[layer_idx].feed_forward.linear2.weight.data = weights[f"layers.{layer_idx}.ffn.w2.weight"]
+        model.layers[layer_idx].feed_forward.linear3.weight.data = weights[f"layers.{layer_idx}.ffn.w3.weight"]
         # Set second RMSNorm weight
-        model.layers[i].layer_norm2.weight.data = weights[f"layers.{i}.ln2.weight"]
-    model.layer_norm.weight.data = weights["ln_final.weight"]
+        model.layers[layer_idx].layer_norm2.weight.data = weights[f"layers.{layer_idx}.ln2.weight"]
+    model.layer_norm_final.weight.data = weights["ln_final.weight"]
     model.output_linear.weight.data = weights["lm_head.weight"]
     # Zero out output linear bias
     model.output_linear.bias.data.zero_()
     return model(in_indices)
+
 
 
 def run_rmsnorm(

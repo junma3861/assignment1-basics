@@ -1,6 +1,8 @@
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Tuple
+from contextlib import contextmanager
+from typing import Optional
 
 
 def apply_temperature(logits: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
@@ -260,4 +262,255 @@ def greedy_decode(
     if squeeze_output:
         output_ids = output_ids.squeeze(0)
     
+    return output_ids
+
+
+# ---------------------------------------------------------------------------
+# Perceive Decoding
+# ---------------------------------------------------------------------------
+
+@contextmanager
+def _capture_hidden_states(module: nn.Module, attr_names: list[str]):
+    """
+    Context manager that registers a forward hook on the first found submodule
+    whose name matches one of ``attr_names``. The hook captures the *output*
+    tensor of that submodule and stores it in the returned list so the caller
+    can read it after the forward pass.
+
+    Args:
+        module: Parent module to search for the target submodule.
+        attr_names: Ordered list of attribute names to try. The first one that
+                    exists on the module is used.
+
+    Yields:
+        A list of length 0 (before the forward pass) or 1 (after), holding
+        the captured output tensor.
+    """
+    target = None
+    for name in attr_names:
+        if hasattr(module, name):
+            target = getattr(module, name)
+            break
+
+    captured: list[torch.Tensor] = []
+
+    if target is None:
+        # Cannot hook; caller will fall back to full logit computation.
+        yield captured
+        return
+
+    def hook(_, __, output):
+        captured.append(output)
+
+    handle = target.register_forward_hook(hook)
+    try:
+        yield captured
+    finally:
+        handle.remove()
+
+
+def _aux_top_p_candidates(
+    aux_logits: torch.Tensor,
+    aux_top_p: float,
+) -> torch.Tensor:
+    """
+    Select the smallest set of token indices whose cumulative probability mass
+    under the auxiliary model is at least ``aux_top_p``.
+
+    Args:
+        aux_logits: Shape (batch_size, vocab_size). Logits from the aux model
+                    for the *last* position only.
+        aux_top_p: Cumulative-probability threshold in (0, 1].
+
+    Returns:
+        1-D LongTensor of *unique* candidate token IDs pooled across the batch.
+        For batch_size == 1 this is simply the per-sequence candidate set.
+    """
+    probs = F.softmax(aux_logits, dim=-1)                 # (B, V)
+    sorted_probs, sorted_indices = torch.sort(probs, descending=True, dim=-1)
+    cumsum = torch.cumsum(sorted_probs, dim=-1)           # (B, V)
+
+    # Shift cumsum by one so we always include the token that pushes the
+    # cumulative mass *past* the threshold (standard nucleus convention).
+    shifted = torch.cat(
+        [torch.zeros(probs.shape[0], 1, device=probs.device), cumsum[:, :-1]], dim=-1
+    )
+    keep = shifted < aux_top_p                            # (B, V)
+
+    # Collect candidate indices across the batch and deduplicate.
+    candidate_ids: list[torch.Tensor] = []
+    for b in range(probs.shape[0]):
+        candidate_ids.append(sorted_indices[b][keep[b]])
+
+    # Always include the top-1 token from every sequence in the batch.
+    candidate_ids.append(sorted_indices[:, 0])            # (B,)
+
+    unique_candidates = torch.unique(torch.cat(candidate_ids, dim=0))
+    return unique_candidates                              # (C,)
+
+
+def _partial_logits(
+    main_model: nn.Module,
+    input_ids: torch.Tensor,
+    candidate_ids: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Run ``main_model`` and compute logits **only** for ``candidate_ids``.
+
+    Efficient path (when the model has a standard pre-output norm layer):
+      1. Hook the pre-output normalisation layer to capture the last-position
+         hidden state ``h``.
+      2. Project ``h`` onto *only* the rows of the output weight matrix that
+         correspond to ``candidate_ids``.  This costs O(C · d_model) instead
+         of O(V · d_model).
+
+    Fallback:
+      If none of the expected attribute names are found, execute a standard
+      forward pass and index-select the full logits to the candidate set.
+
+    Args:
+        main_model: Large language model; forward returns (B, S, V).
+        input_ids: Shape (B, S).
+        candidate_ids: 1-D LongTensor of candidate token indices, shape (C,).
+
+    Returns:
+        Logits restricted to candidates, shape (B, C).
+    """
+    PRE_OUTPUT_NORM_NAMES = ["layer_norm_final", "norm_f", "ln_f", "final_norm"]
+    OUTPUT_PROJ_NAMES = ["output_linear", "lm_head", "head", "output_projection"]
+
+    with torch.no_grad():
+        with _capture_hidden_states(main_model, PRE_OUTPUT_NORM_NAMES) as captured:
+            full_logits = main_model(input_ids)     # (B, S, V)
+
+        if captured:
+            # captured[0]: (B, S, d_model) – output of the pre-output norm
+            hidden = captured[0][:, -1, :]          # (B, d_model)
+
+            proj: Optional[nn.Linear] = None
+            for name in OUTPUT_PROJ_NAMES:
+                if hasattr(main_model, name):
+                    proj = getattr(main_model, name)
+                    break
+
+            if proj is not None and isinstance(proj, nn.Linear):
+                W = proj.weight[candidate_ids, :]   # (C, d_model)
+                candidate_logits = hidden @ W.T     # (B, C)
+                if proj.bias is not None:
+                    candidate_logits = candidate_logits + proj.bias[candidate_ids]
+                return candidate_logits
+
+    # Fallback: slice the full result.
+    return full_logits[:, -1, :][:, candidate_ids]  # (B, C)
+
+
+def perceive_decode(
+    main_model: nn.Module,
+    aux_model: nn.Module,
+    prompt_ids: torch.Tensor,
+    max_new_tokens: int = 100,
+    temperature: float = 1.0,
+    aux_top_p: float = 0.9,
+    top_p: float = 1.0,
+    eos_token_id: int = 50256,
+    device: Optional[torch.device] = None,
+) -> torch.Tensor:
+    """
+    Perceive Decoding: use a small auxiliary model as a cheap first-pass filter
+    to identify likely next tokens, then score only those candidates with the
+    large main model.
+
+    **Algorithm (per step):**
+
+    1. **Auxiliary pass** — run ``aux_model`` and collect the nucleus of tokens
+       that together account for ``aux_top_p`` of the predicted probability
+       mass.  Call this set *C* (typically |C| << vocab_size).
+    2. **Main-model partial pass** — run ``main_model`` through all transformer
+       layers to get accurate contextual hidden states.  Project the
+       last-position hidden state onto *only* the |C| rows of the output
+       embedding corresponding to *C*, skipping ``vocab_size − |C|`` dot
+       products in the final linear layer.
+    3. **Sample** — apply temperature scaling and optional top-p filtering to
+       the main model's restricted logits, then draw the next token.
+    4. Append the token; stop when ``eos_token_id`` is generated or
+       ``max_new_tokens`` is reached.
+
+    The key trade-off is ``aux_top_p``:  a smaller value produces a tighter
+    candidate set (faster main-model projection) at the cost of potentially
+    missing tokens that the large model would have ranked highly.
+
+    Args:
+        main_model: Large, accurate language model.
+                    Forward signature: ``(input_ids) -> (B, S, vocab_size)``.
+        aux_model: Small, fast language model sharing the *same* vocabulary.
+                   Forward signature: ``(input_ids) -> (B, S, vocab_size)``.
+        prompt_ids: Token IDs of the prompt, shape ``(B, T)`` or ``(T,)``.
+        max_new_tokens: Maximum number of tokens to generate.
+        temperature: Temperature applied to the **main** model's restricted
+                     logits before sampling.
+        aux_top_p: Nucleus threshold for the **auxiliary** model's candidate
+                   selection (default 0.9).  Lower → fewer candidates → faster.
+        top_p: Additional nucleus filtering on the **main** model's restricted
+               logits after temperature scaling (default 1.0 = disabled).
+        eos_token_id: Token ID that signals end-of-sequence.
+        device: Target device; inferred from ``main_model`` if not given.
+
+    Returns:
+        Generated token IDs (prompt + new tokens), shape ``(B, T+N)`` or
+        ``(T+N,)`` for a single-prompt input.
+    """
+    if prompt_ids.dim() == 1:
+        prompt_ids = prompt_ids.unsqueeze(0)
+        squeeze_output = True
+    else:
+        squeeze_output = False
+
+    if device is None:
+        device = next(main_model.parameters()).device
+
+    prompt_ids = prompt_ids.to(device)
+    main_model.eval()
+    aux_model.eval()
+
+    output_ids = prompt_ids.clone()
+
+    with torch.no_grad():
+        for _ in range(max_new_tokens):
+            # ------------------------------------------------------------------
+            # Step 1: Auxiliary model → candidate token set C
+            # ------------------------------------------------------------------
+            aux_logits = aux_model(output_ids)           # (B, S, V)
+            aux_last = aux_logits[:, -1, :]              # (B, V)
+            candidate_ids = _aux_top_p_candidates(aux_last, aux_top_p)  # (C,)
+
+            # ------------------------------------------------------------------
+            # Step 2: Main model partial forward → logits over C only
+            # ------------------------------------------------------------------
+            candidate_logits = _partial_logits(main_model, output_ids, candidate_ids)  # (B, C)
+
+            # ------------------------------------------------------------------
+            # Step 3: Temperature + optional top-p → sample
+            # ------------------------------------------------------------------
+            candidate_logits = apply_temperature(candidate_logits, temperature)
+
+            if top_p < 1.0:
+                candidate_logits = top_p_sampling(candidate_logits, top_p)
+
+            candidate_probs = F.softmax(candidate_logits, dim=-1)             # (B, C)
+            sampled_pos = torch.multinomial(candidate_probs, num_samples=1)   # (B, 1)
+
+            # Map local position back to the actual vocabulary index.
+            next_tokens = candidate_ids[sampled_pos]                          # (B, 1)
+
+            # ------------------------------------------------------------------
+            # Step 4: Append and check stopping condition
+            # ------------------------------------------------------------------
+            output_ids = torch.cat([output_ids, next_tokens], dim=-1)
+
+            if (next_tokens == eos_token_id).all():
+                break
+
+    if squeeze_output:
+        output_ids = output_ids.squeeze(0)
+
     return output_ids

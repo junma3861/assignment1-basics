@@ -135,6 +135,60 @@ def load_data_memmap(data_path: str) -> np.ndarray:
     return data
 
 
+def validate_data(
+    train_data: np.ndarray,
+    val_data: np.ndarray,
+    vocab_size: int
+) -> None:
+    """
+    Validate that memory-mapped data looks correct.
+    
+    Args:
+        train_data: Training dataset
+        val_data: Validation dataset
+        vocab_size: Expected vocabulary size
+        
+    Raises:
+        ValueError: If data contains invalid token IDs
+    """
+    # Check for empty data
+    if len(train_data) == 0:
+        raise ValueError("Training data is empty")
+    if len(val_data) == 0:
+        raise ValueError("Validation data is empty")
+    
+    # Check data types
+    if train_data.dtype != np.uint16:
+        raise ValueError(f"Training data dtype {train_data.dtype} is not uint16")
+    if val_data.dtype != np.uint16:
+        raise ValueError(f"Validation data dtype {val_data.dtype} is not uint16")
+    
+    # Check for values outside vocabulary range
+    train_min, train_max = train_data.min(), train_data.max()
+    val_min, val_max = val_data.min(), val_data.max()
+    
+    if train_min < 0:
+        raise ValueError(f"Training data contains negative values (min: {train_min})")
+    if train_max >= vocab_size:
+        raise ValueError(
+            f"Training data contains token IDs >= vocab_size: "
+            f"max_id={train_max}, vocab_size={vocab_size}"
+        )
+    
+    if val_min < 0:
+        raise ValueError(f"Validation data contains negative values (min: {val_min})")
+    if val_max >= vocab_size:
+        raise ValueError(
+            f"Validation data contains token IDs >= vocab_size: "
+            f"max_id={val_max}, vocab_size={vocab_size}"
+        )
+    
+    print(f"✓ Training data validated: {len(train_data):,} tokens, "
+          f"token range [{train_min}, {train_max}]")
+    print(f"✓ Validation data validated: {len(val_data):,} tokens, "
+          f"token range [{val_min}, {val_max}]")
+
+
 @torch.no_grad()
 def estimate_loss(
     model: nn.Module,
@@ -210,6 +264,11 @@ def train(args):
     val_data = load_data_memmap(args.val_data_path)
     print(f"Train data size: {len(train_data):,} tokens")
     print(f"Validation data size: {len(val_data):,} tokens")
+    
+    # Validate data integrity
+    print("\nValidating data...")
+    validate_data(train_data, val_data, args.vocab_size)
+    print()
     
     # Initialize model
     print("\nInitializing model...")

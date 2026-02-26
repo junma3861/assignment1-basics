@@ -175,3 +175,5 @@ tests/fixtures/ts_tests/model.pt
 tests/fixtures/tinystories_sample_5M.txt
 tests/_snapshots/test_transformer_lm.npz
 tests/fixtures/gpt2_vocab.json
+data/TinyStoriesV2-GPT4-train.uint16
+data/TinyStoriesV2-GPT4-valid.uint16

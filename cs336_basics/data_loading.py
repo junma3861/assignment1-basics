@@ -24,6 +24,12 @@ def get_batch(
     """
     # Randomly select starting indices for each sequence in the batch
     start_indices = torch.randint(0, len(dataset) - context_length, (batch_size,))
-    input_sequences = torch.stack([torch.tensor(dataset[i:i + context_length], device=device) for i in start_indices])
-    labels = torch.stack([torch.tensor(dataset[i + 1:i + context_length + 1], device=device) for i in start_indices])
+    input_sequences = torch.stack([
+        torch.tensor(dataset[i:i + context_length], device=device, dtype=torch.long)
+        for i in start_indices
+    ])
+    labels = torch.stack([
+        torch.tensor(dataset[i + 1:i + context_length + 1], device=device, dtype=torch.long)
+        for i in start_indices
+    ])
     return input_sequences, labels

@@ -23,8 +23,15 @@ class RotaryPositionEmbedding(nn.Module):
         
         # Compute frequencies: theta^(2i/d_k) for i in [0, d_k/2)
         # This gives us 1/frequencies that decrease exponentially
-        freqs = 1.0 / (self.theta ** (torch.arange(0, self.d_k, 2, device=self.device, dtype=torch.float32) / self.d_k))
+        freqs = 1.0 / (
+            self.theta
+            ** (torch.arange(0, self.d_k, 2, device=x.device, dtype=torch.float32) / self.d_k)
+        )
         
+        # Broadcast position IDs to align with x's leading dimensions (e.g., heads)
+        while position_ids.dim() < x.dim() - 1:
+            position_ids = position_ids.unsqueeze(1)
+
         # Compute position * frequency for each position and frequency
         # position_ids: (..., seq_len), freqs: (d_k/2,) -> (..., seq_len, d_k/2)
         position_freqs = position_ids.unsqueeze(-1).float() * freqs.unsqueeze(0)

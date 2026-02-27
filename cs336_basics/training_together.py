@@ -11,9 +11,30 @@ This script provides a configurable training loop with the following features:
 
 import argparse
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Optional
+
+
+class Tee:
+    """Mirror every write to both stdout and a log file."""
+    def __init__(self, filepath: Path):
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        self._file = open(filepath, "w", buffering=1, encoding="utf-8")
+        self._stdout = sys.stdout
+
+    def write(self, data: str):
+        self._stdout.write(data)
+        self._file.write(data)
+
+    def flush(self):
+        self._stdout.flush()
+        self._file.flush()
+
+    def close(self):
+        self._file.close()
+        sys.stdout = self._stdout
 
 import numpy as np
 import torch
@@ -108,7 +129,11 @@ def parse_args():
     # Seed
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for reproducibility")
-    
+
+    # Logging
+    parser.add_argument("--log_file", type=str, default=None,
+                        help="Path to log file (output is tee'd to stdout + file)")
+
     return parser.parse_args()
 
 
@@ -439,7 +464,18 @@ def train(args):
 def main():
     """Entry point for the training script."""
     args = parse_args()
-    train(args)
+
+    tee = None
+    if args.log_file:
+        tee = Tee(Path(args.log_file))
+        sys.stdout = tee
+        print(f"Logging to: {args.log_file}")
+
+    try:
+        train(args)
+    finally:
+        if tee is not None:
+            tee.close()
 
 
 if __name__ == "__main__":
